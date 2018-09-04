@@ -1,0 +1,439 @@
+setwd("/Users/sophieli/Desktop/processed/")
+imp_vol<-read.csv("implied_volatility_strike_all.csv",header = T)
+imp_vol_ATMCALL<-imp_vol[imp_vol$delta==50,]
+imp_vol_ATMPUT<-imp_vol[imp_vol$delta==-50,]
+impvol<-0.5*(imp_vol_ATMPUT$impl_volatility+imp_vol_ATMCALL$impl_volatility)
+imp_vol_ATM<-data.frame(imp_vol_ATMPUT$date,imp_vol_ATMPUT$ticker,impvol)#ATM (callvol+put_vol)/2 use it when you do Monte Carlo
+colnames(imp_vol_ATM)[1:2]<-c("date","ticker")
+imp_Vol_all<- split(imp_vol_ATM,imp_vol_ATM$ticker)
+#implied vol list#############################################################
+imp_Vol_all_call<- split(imp_vol_ATMCALL,imp_vol_ATMCALL$ticker)#use it when you want to do rescale as in HW2 Q5
+imp_Vol_all_put<- split(imp_vol_ATMPUT,imp_vol_ATMPUT$ticker)#use it when you want to do rescale as in HW2 Q5
+IMPVOLDJX<-imp_Vol_all$DJX
+imp_Vol_all$DJX=NULL
+imp_Vol_all[[31]]<-IMPVOLDJX
+############ risk free rate #################
+Risk_free_rate<-0.00183295467#average of all 7day rate
+djxPrice<-read.csv("DJX_Price.csv",header = T)
+comPrice<-read.csv("djxcomponentPrice.csv",header = T)
+colnames(djxPrice)[1]<-"date"
+colnames(comPrice)[1]<-"date"
+##########all underlying price#########
+unly_Price = merge(comPrice,djxPrice, by = "date")#all underlying price
+
+library(fOptions)
+#####option price#########
+Call_Option_Price=matrix(0,1425,31)#call_option_price
+call_option_gamma=matrix(0,1425,31)
+call_option_theta=matrix(0,1425,31)
+call_option_vega=matrix(0,1425,31)
+call_option_rho=matrix(0,1425,31)
+Put_Option_Price=matrix(0,1425,31)#put_option_price
+put_option_gamma=matrix(0,1425,31)
+put_option_theta=matrix(0,1425,31)
+put_option_vega=matrix(0,1425,31)
+put_option_rho=matrix(0,1425,31)
+for (i in 1:31)
+{
+  for (j in 1:1425)
+  {
+    Call_Option_Price[j,i]<-(GBSOption("c",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMCALL$impl_volatility[j]))@price
+    Put_Option_Price[j,i]<-(GBSOption("p",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMPUT$impl_volatility[j]))@price
+    call_option_gamma[j,i]<-(GBSCharacteristics("c",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMCALL$impl_volatility[j]))$gamma
+    call_option_theta[j,i]<-(GBSCharacteristics("c",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMCALL$impl_volatility[j]))$theta
+    call_option_vega[j,i]<-(GBSCharacteristics("c",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMCALL$impl_volatility[j]))$vega
+    call_option_rho[j,i]<-(GBSCharacteristics("c",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMCALL$impl_volatility[j]))$rho
+    put_option_gamma[j,i]<-(GBSCharacteristics("p",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMPUT$impl_volatility[j]))$gamma
+    put_option_theta[j,i]<-(GBSCharacteristics("p",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMPUT$impl_volatility[j]))$theta
+    put_option_vega[j,i]<-(GBSCharacteristics("p",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMPUT$impl_volatility[j]))$vega
+    put_option_rho[j,i]<-(GBSCharacteristics("p",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMPUT$impl_volatility[j]))$rho
+  }
+}
+
+weights=matrix(0,1,31)
+all_price<-sum(unly_Price[1,2:31])
+
+
+for (i in 1:30)
+{
+  weights[1,i]<-unly_Price[1,i+1]/all_price
+}
+
+GREEKS<-read.csv("initial_greeks.csv",header = T)
+colnames(GREEKS)[1]<-"ticker"
+VegaSum=0
+ThetaSum=0
+for (i in 1:30)
+{
+  VegaSum=VegaSum+weights[1,i]*GREEKS$Vega[i]
+  ThetaSum=ThetaSum+weights[1,i]*GREEKS$Theta[i]
+}
+vega_adjust_weights=matrix(0,1,31)
+theta_adjust_weights=matrix(0,1,31)
+#########weight k###############
+for (i in 1:30)
+{
+  vega_adjust_weights[1,i]=weights[1,i]*(GREEKS$Vega[31]/VegaSum)#always use this weights
+  theta_adjust_weights[1,i]=weights[1,i]*(GREEKS$Theta[31]/ThetaSum)#always use this weights
+}
+
+#######greek letter risks#######
+sumvega_theta0=0
+sumtheta_vega0=0
+sumgamma_theta0=0
+sumgamma_vega0=0
+sumrho_theta0=0
+sumrho_vega0=0
+gamma=matrix(0,1,31)
+rho=matrix(0,1,31)
+theta=matrix(0,1,31)
+vega=matrix(0,1,31)
+for(i in 1:31)
+{
+  gamma[i]=0.5*mean(call_option_gamma[,i])+0.5*mean(put_option_gamma[,i])
+  rho[i]=0.5*mean(call_option_rho[,i])+0.5*mean(put_option_rho[,i])
+  theta[i]=0.5*mean(call_option_theta[,i])+0.5*mean(put_option_theta[,i])
+  vega[i]=0.5*mean(call_option_vega[,i])+0.5*mean(put_option_vega[,i])
+}
+for(i in 1:30)
+{
+  sumvega_theta0=sumvega_theta0+theta_adjust_weights[1,i]*GREEKS$Vega[i]
+  sumtheta_vega0=sumtheta_vega0+vega_adjust_weights[1,i]*GREEKS$Theta[i]
+  sumgamma_theta0=sumgamma_theta0+theta_adjust_weights[1,i]*gamma[i]
+  sumgamma_theta0=sumgamma_vega0+vega_adjust_weights[1,i]*gamma[i]
+  sumrho_theta0=sumrho_theta0+theta_adjust_weights[1,i]*rho[i]
+  sumrho_vega0=sumrho_vega0+vega_adjust_weights[1,i]*rho[i]
+}
+vegarisk=GREEKS$Vega[31]-sumvega_theta0 #GREEKS$Vega[31]
+thetarisk=GREEKS$Theta[31]-sumtheta_vega0#GREEKS$T
+gammarisk_theta0=gamma[31]-sumgamma_theta0
+gammarisk_vega0=gamma[31]-sumgamma_vega0
+rhorisk_theta0=rho[31]-sumrho_theta0
+rhorisk_vega0=rho[31]-sumrho_vega0
+
+
+setwd("D:/")
+imp_vol<-read.csv("implied_volatility_strike_all.csv",header = T)
+imp_vol_ATMCALL<-imp_vol[imp_vol$delta==50,]
+imp_vol_ATMPUT<-imp_vol[imp_vol$delta==-50,]
+impvol<-0.5*(imp_vol_ATMPUT$impl_volatility+imp_vol_ATMCALL$impl_volatility)
+imp_vol_ATM<-data.frame(imp_vol_ATMPUT$date,imp_vol_ATMPUT$ticker,impvol)#ATM (callvol+put_vol)/2 use it when you do Monte Carlo
+colnames(imp_vol_ATM)[1:2]<-c("date","ticker")
+imp_Vol_all<- split(imp_vol_ATM,imp_vol_ATM$ticker)
+imp_Vol_all_call<- split(imp_vol_ATMCALL,imp_vol_ATMCALL$ticker)#use it when you want to do rescale as in HW2 Q5
+imp_Vol_all_put<- split(imp_vol_ATMPUT,imp_vol_ATMPUT$ticker)#use it when you want to do rescale as in HW2 Q5
+IMPVOLDJX<-imp_Vol_all$DJX
+imp_Vol_all$DJX=NULL
+imp_Vol_all[[31]]<-IMPVOLDJX
+Risk_free_rate<-0.00183295467#average of all 7day rate
+setwd("D:/")
+djxPrice<-read.csv("DJX_Price.csv",header = T)
+comPrice<-read.csv("djxcomponentPrice.csv",header = T)
+colnames(djxPrice)[1]<-"date"
+colnames(comPrice)[1]<-"date"
+unly_Price = merge(comPrice,djxPrice, by = "date")#all underlying price
+
+library(fOptions)
+Call_Option_Price=matrix(0,1425,31)#call_option_price
+Put_Option_Price=matrix(0,1425,31)#put_option_price
+for (i in 1:31)
+{
+  for (j in 1:1425)
+  {
+    Call_Option_Price[j,i]<-(GBSOption("c",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMCALL$impl_volatility[j]))@price
+    Put_Option_Price[j,i]<-(GBSOption("p",unly_Price[j,i+1],unly_Price[j,i+1],30/360, Risk_free_rate,Risk_free_rate,imp_vol_ATMPUT$impl_volatility[j]))@price
+  }
+}
+
+weights=matrix(0,1,31)
+all_price<-sum(unly_Price[1,2:31])
+for (i in 1:30)
+{
+  weights[1,i]<-unly_Price[1,i+1]/all_price
+}
+setwd("D:/")
+GREEKS<-read.csv("initial_greeks.csv",header = T)
+colnames(GREEKS)[1]<-"ticker"
+VegaSum=0
+ThetaSum=0
+for (i in 1:30)
+{
+  VegaSum=VegaSum+weights[1,i]*GREEKS$Vega[i]
+  ThetaSum=ThetaSum+weights[1,i]*GREEKS$Theta[i]
+}
+vega_adjust_weights=matrix(0,1,31)
+theta_adjust_weights=matrix(0,1,31)
+for (i in 1:30)
+{
+  vega_adjust_weights[1,i]=weights[1,i]*(GREEKS$Vega[31]/VegaSum)#always use this weights
+  theta_adjust_weights[1,i]=weights[1,i]*(GREEKS$Theta[31]/ThetaSum)#always use this weights
+}
+
+return=matrix(0,1424,31)
+
+for(i in 1:31){
+    return[,i]=log(Put_Option_Price[2:1425,i]+Call_Option_Price[2:1425,i])-log(Put_Option_Price[1:1424,i]+Call_Option_Price[1:1424,i])
+}
+
+#historical simulation
+#assume invest 100 million
+#one day horizon 99% CL
+#for each day use the returns of the previous 1200 days
+total_vega=matrix(0,1200,1)
+total_theta=matrix(0,1200,1)
+var_hs_vega=matrix(0,224,1)
+var_hs_theta=matrix(0,224,1)
+ES_hs_vega=matrix(0,224,1)
+ES_hs_theta=matrix(0,224,1)
+
+for(k in 1:224){
+  for(i in 1:1200){
+    buy_component_vega=0
+    buy_component_theta=0
+    for(j in 1:30){
+      buy_component_vega = buy_component_vega+(return[i+k-1,j])*vega_adjust_weights[1,j] 
+      buy_component_theta = buy_component_theta+(return[i+k-1,j])*theta_adjust_weights[1,j]
+    }
+    total_vega[i]=1000000*(return[i+k-1,31]-buy_component_vega)
+    total_theta[i]=1000000*(return[i+k-1,31]-buy_component_theta)
+  }
+  var_hs_vega[k]=-quantile(total_vega,0.05)
+  var_hs_theta[k]=-quantile(total_theta,0.05)
+  ES_hs_vega[k] = -mean(total_vega[total_vega<=(-var_hs_vega[k])])
+  ES_hs_theta[k] = -mean(total_theta[total_theta<=(-var_hs_theta[k])])
+}
+plot(var_hs_theta,type="l",col="blue",lwd=1,ylim=c(0,25000),xlab="Day",ylab="Value-at-Risk")
+lines(var_hs_vega,type="l",col="red",lwd=1)
+plot(ES_hs_theta,type="l",col="blue",lwd=1,ylim=c(0,40000),xlab="Day",ylab="Value-at-Risk")
+lines(ES_hs_vega,type="l",col="red",lwd=1)
+
+total_vega=matrix(0,1424,1)
+total_theta=matrix(0,1424,1)
+for(i in 1:1424){
+  buy_component_vega=0
+  buy_component_theta=0
+  for(j in 1:30){
+    buy_component_vega = buy_component_vega+(return[i,j])*vega_adjust_weights[1,j] 
+    buy_component_theta = buy_component_theta+(return[i,j])*theta_adjust_weights[1,j]
+  }
+  total_vega[i]=1000000*(return[i,31]-buy_component_vega)
+  total_theta[i]=1000000*(return[i,31]-buy_component_theta)
+}
+var_hs_vega1=-quantile(total_vega,0.05)
+var_hs_vega1
+var_hs_theta1=-quantile(total_theta,0.05)
+var_hs_theta1
+ES_hs_vega1 = -mean(total_vega[total_vega<=(-var_hs_vega1)])
+ES_hs_vega1
+ES_hs_theta1 = -mean(total_theta[total_theta<=(-var_hs_theta1)])
+ES_hs_theta1
+
+
+#Weighted Historical Simulation
+w_hs=matrix(0,1200,1)
+yita=0.97
+for(i in 1:1200){
+  w_hs[i]=yita^(i-1)*(1-yita)/(1-yita^1200)
+}
+
+portfolio_vega=matrix(0,1424,1)
+portfolio_theta=matrix(0,1424,1)
+
+for(i in 1:1424){
+  buy_component_vega=0
+  buy_component_theta=0
+  for(j in 1:30){
+    buy_component_vega = buy_component_vega+(return[i,j])*vega_adjust_weights[1,j] 
+    buy_component_theta = buy_component_theta+(return[i,j])*theta_adjust_weights[1,j]
+  }
+  portfolio_vega[i]=(return[i,31]-buy_component_vega)
+  portfolio_theta[i]=(return[i,31]-buy_component_theta)
+}
+
+portfolio_vega_ad=matrix(0,1200,1)
+portfolio_theta_ad=matrix(0,1200,1)
+var_whs_vega=matrix(0,224,1)
+var_whs_theta=matrix(0,224,1)
+ES_whs_vega=matrix(0,224,1)
+ES_whs_theta=matrix(0,224,1)
+for(i in 1:224){
+  for(j in 1:1200){
+    portfolio_vega_ad[j]=1000000*portfolio_vega[1200+i-j]*w_hs[j]
+    portfolio_theta_ad[j]=1000000*portfolio_theta[1200+i-j]*w_hs[j]
+  }
+  var_whs_vega[i]=-quantile(portfolio_vega_ad,0.05)
+  var_whs_theta[i]=-quantile(portfolio_theta_ad,0.05)
+  ES_whs_vega[i] = -mean(portfolio_vega_ad[portfolio_vega_ad<=(-var_whs_vega[i])])
+  ES_whs_theta[i] = -mean(portfolio_theta_ad[portfolio_theta_ad<=(-var_whs_theta[i])])
+}
+
+plot(100*var_whs_theta,type="l",col="blue",lwd=1,ylim=c(0,1000),xlab="Day",ylab="Value-at-Risk")
+lines(100*var_whs_vega,type="l",col="red",lwd=1)
+
+plot(100*ES_whs_theta,type="l",col="blue",lwd=1,ylim=c(0,15000),xlab="Day",ylab="Value-at-Risk")
+lines(100*ES_whs_vega,type="l",col="red",lwd=1)
+
+
+portfolio_vega_ad=matrix(0,1424,1)
+portfolio_theta_ad=matrix(0,1424,1)
+w_hs1=matrix(0,1424,1)
+yita=0.97
+for(i in 1:1424){
+  w_hs1[i]=yita^(i-1)*(1-yita)/(1-yita^1424)
+}
+
+for(j in 1:1424){
+  portfolio_vega_ad[j]=100000000*portfolio_vega[j]*w_hs1[j]
+  portfolio_theta_ad[j]=100000000*portfolio_theta[j]*w_hs1[j]
+}
+var_whs_vega1=-quantile(portfolio_vega_ad,0.05)
+var_whs_vega1
+var_whs_theta1=-quantile(portfolio_theta_ad,0.05)
+var_whs_theta1
+ES_whs_vega1 = -mean(portfolio_vega_ad[portfolio_vega_ad<=(-var_whs_vega1)])
+ES_whs_vega1
+ES_whs_theta1 = -mean(portfolio_theta_ad[portfolio_theta_ad<=(-var_whs_theta1)])
+ES_whs_theta1
+
+#Rescaled return historical simulation
+
+rescaled_var=matrix(0,1200,31)
+rescaled_sd=matrix(0,224,31)
+u=matrix(0,224,31)
+portfolio_rr_vega=matrix(0,224,1)
+portfolio_rr_theta=matrix(0,224,1)
+
+for(i in 1:224){
+    for(j in 1:1200){
+      for(k in 1:31){
+        rescaled_var[j,k]=return[1200-j+i,k]^2*(0.94^j)
+      }
+    }
+    for(m in 1:31){
+      rescaled_sd[i,m]=sqrt(0.06*sum(rescaled_var[,m]))
+    }
+}
+
+for(j in 1:224){
+  for(k in 1:31){
+      u[j,k]=return[1200+j,k]*rescaled_sd[224,k]/rescaled_sd[j,K]
+  }
+}
+for(i in 1:224){
+  buy_component_vega=0
+  buy_component_theta=0
+  for(j in 1:30){
+    buy_component_vega = buy_component_vega+(u[i,j])*vega_adjust_weights[1,j]
+    buy_component_theta = buy_component_theta+(u[i,j])*theta_adjust_weights[1,j]
+  }
+  portfolio_rr_vega[i]=1000000*(u[i,31]-buy_component_vega)
+  portfolio_rr_theta[i]=1000000*(u[i,31]-buy_component_theta)
+}
+var_rr_vega=-quantile(portfolio_rr_vega,0.05)
+var_rr_vega
+var_rr_theta=-quantile(portfolio_rr_theta,0.05)
+var_rr_theta
+ES_rr_vega1 = -mean(portfolio_rr_vega[portfolio_rr_vega<=(-var_rr_vega)])
+ES_rr_vega1
+ES_rr_theta1 = -mean(portfolio_rr_theta[portfolio_rr_theta<=(-var_rr_theta)])
+ES_rr_theta1
+
+# Monte Carlo Simulations
+option_price = Call_Option_Price+Put_Option_Price;
+option_return = log(option_price[2:1425,]/option_price[1:1424,]);
+
+# which(is.na(imp_Vol_all[[i]]$impvol))
+imp_Vol_all[[7]]$impvol[1383]=(imp_Vol_all[[7]]$impvol[1382]+imp_Vol_all[[7]]$impvol[1384])/2;
+
+logrelatives = option_return
+
+for(i in 1:31){
+  logrelatives = data.frame(logrelatives,
+                            log(imp_Vol_all[[i]]$impvol[2:1425]/imp_Vol_all[[i]]$impvol[1:1424]))
+}
+colnames(logrelatives)[32:62]<-c("V1","V2","V3","V4","V5","V6","V7","V8","V9","V10","V11","V12","V13","V14","V15","V16","V17","V18","V19","V20","V21","V22","V23","V24","V25","V26","V27","V28","V29","V30","V31");
+
+lambda = 0.94
+lag = sapply(1:300, function(x, lambda) ((lambda^(x-1))*0.06),lambda)  #create vector of weights
+logrelatives = logrelatives[1424:1, ]
+cov_matrix <- cov.wt(logrelatives[1:300, ], wt = lag)  #result is a list
+tmp <- unlist(cov_matrix[1])                            #result is a vector
+Sigma <- matrix(tmp, nrow=62) 
+
+library(MASS)
+pf_value_vega_mc = 0
+set.seed(42)
+miu = matrix(0,62,1)
+rand = mvrnorm(10000, mu = miu, Sigma = Sigma)
+for(i in 1:10000){
+  pf_value_vega_mc[i] = rand[i,31] - rand[i,1:30]%*%vega_adjust_weights[1:30]
+}
+
+pf_value_vega_mc = pf_value_vega_mc * 1000000
+VaR_vega_mc = -quantile(pf_value_vega_mc, 0.05)
+VaR_vega_mc
+E_sf_vega_mc = -mean(pf_value_vega_mc[pf_value_vega_mc<=(-VaR_vega_mc)])
+E_sf_vega_mc
+
+pf_value_theta_mc = 0
+for(i in 1:10000){
+  pf_value_theta_mc[i] = rand[i,31] - rand[i,1:30]%*%theta_adjust_weights[1:30]
+}
+
+pf_value_theta_mc = pf_value_theta_mc * 1000000
+VaR_theta_mc = -quantile(pf_value_theta_mc, 0.05)
+VaR_theta_mc
+E_sf_theta_mc = -mean(pf_value_theta_mc[pf_value_theta_mc<=(-VaR_theta_mc)])
+E_sf_theta_mc
+
+# NGARCH
+initial_sigma=matrix(0,31,1);
+initial_sigma1=matrix(0,31,1);
+initial_alpha=matrix(0.2,31,1);
+initial_beta=matrix(0.3,31,1);
+initial_theta=matrix(0,31,1);
+
+for(j in 1:31){
+  initial_sigma[j]=sqrt(mean(option_return[,j]^2));
+  initial_sigma1[j]=sqrt(mean(option_return[1:20,j]^2));
+}
+
+result = 0;
+for(k in 1:31){
+  initialvalue_2=c(initial_alpha[k],initial_beta[k],initial_sigma[k],initial_sigma1[k],initial_theta[k]);
+  # theta[1]=alpha, theta[2]=beta, theta[3]=sigma, theta[4]=sigma_1, theta[5]=theta
+  sigma_t_2=matrix(1424,1,0);
+  r_comp = option_return[,k]
+  L=function(r_comp, theta){
+    sigma_t_2[1]=theta[4];
+    if(theta[1]*(1+theta[5])^2+theta[2]>=1 || theta[3]<0 || theta[4]<0 || theta[1]<0 || theta[2]<0){
+      L=9999;
+    }else{
+      for(i in 2:1424){
+        sigma_t_2[i]=sqrt((1-theta[1]*(1+theta[5]^2)-theta[2])*theta[3]^2+theta[1]*(r_comp[i-1]-theta[5]*sigma_t_2[i-1])^2+theta[2]*sigma_t_2[i-1]^2);
+      }
+      L=(1/sqrt(2*pi*sigma_t_2^2))*exp(-r_comp^2/(2*sigma_t_2^2));
+    }
+  }
+  result[k]=optim(initialvalue_2,fn=function(theta){-sum(log(L(r_comp,theta)))},method="BFGS");
+}
+
+parameter_ngarch=matrix(0,5,31)
+for(i in 1:31){
+  parameter_ngarch[1,i]=result[[i]][1]
+  parameter_ngarch[2,i]=result[[i]][2]
+  parameter_ngarch[3,i]=result[[i]][5]
+  parameter_ngarch[4,i]=result[[i]][3]
+  parameter_ngarch[5,i]=result[[i]][4]
+}
+
+sigma_ngarch_hat=matrix(0,1425,31);
+for(j in 1:31){
+  sigma_ngarch_hat[1,j]=parameter_ngarch[5,j];
+  for(i in 2:1425){
+    sigma_ngarch_hat[i,j]=sqrt(parameter_ngarch[4,j]^2*(1-parameter_ngarch[1,j]*(1+parameter_ngarch[3,j]^2)-parameter_ngarch[2,j])+parameter_ngarch[1,j]*(option_return[i-1,j]-parameter_ngarch[3,j]*sigma_ngarch_hat[i-1,j])^2+parameter_ngarch[2,j]*sigma_ngarch_hat[i-1,j]^2);
+  }
+}
+
+
+
